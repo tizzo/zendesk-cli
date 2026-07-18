@@ -85,6 +85,10 @@ enum Command {
     #[command(subcommand)]
     Ticket(TicketCommand),
 
+    /// Work with views (agent filters): list them, or fetch their tickets.
+    #[command(subcommand)]
+    View(ViewCommand),
+
     /// Post a reply to a ticket (public reply or internal note).
     Reply(ReplyArgs),
 
@@ -119,6 +123,24 @@ enum TicketCommand {
     Comments {
         /// Numeric ticket ID.
         id: i64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ViewCommand {
+    /// List active views (agent filters) with their IDs and titles.
+    List,
+    /// Fetch the tickets in a view.
+    ///
+    /// The view ID is the trailing number in the agent-filter URL
+    /// (`.../agent/filters/1500014631401`). Omit it to use the configured
+    /// default view (`zd config set --default-view <ID>`).
+    Tickets {
+        /// View ID. Defaults to the configured default view if omitted.
+        id: Option<i64>,
+        /// Maximum number of tickets to return (1-100).
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
     },
 }
 
@@ -163,6 +185,9 @@ enum ConfigCommand {
         /// API token — stored securely in the OS keychain, never written to disk in plaintext.
         #[arg(long, hide_env_values = true)]
         api_token: Option<String>,
+        /// Default view (agent filter) ID used by `zd view tickets` with no argument.
+        #[arg(long)]
+        default_view: Option<i64>,
     },
     /// Remove the API token from the OS keychain for the current subdomain.
     ClearToken,
@@ -216,6 +241,27 @@ async fn run() -> Result<()> {
                 match g.format() {
                     Format::Json => print_json(&comments)?,
                     Format::Human => output::comments_human(*id, &comments),
+                }
+            }
+        },
+
+        Command::View(cmd) => match cmd {
+            ViewCommand::List => {
+                let views = g.client()?.list_views().await?;
+                match g.format() {
+                    Format::Json => print_json(&views)?,
+                    Format::Human => output::views_table(&views),
+                }
+            }
+            ViewCommand::Tickets { id, limit } => {
+                let view_id = resolve_view_id(g, *id)?;
+                let tickets = g.client()?.list_view_tickets(view_id, *limit).await?;
+                match g.format() {
+                    Format::Json => print_json(&tickets)?,
+                    Format::Human => {
+                        println!("View {view_id} — {} ticket(s)", tickets.len());
+                        output::tickets_table(&tickets);
+                    }
                 }
             }
         },
@@ -281,6 +327,22 @@ fn resolve_body(args: &ReplyArgs) -> Result<String> {
     anyhow::bail!("provide the reply body with --body, --file, or --stdin")
 }
 
+/// Resolve the view ID from an explicit argument, falling back to the
+/// configured default view.
+fn resolve_view_id(g: &GlobalArgs, arg: Option<i64>) -> Result<i64> {
+    if let Some(id) = arg {
+        return Ok(id);
+    }
+    match config::resolve_with_source(&g.overrides())?.0.default_view {
+        Some(id) => Ok(id),
+        None => anyhow::bail!(
+            "no view ID given and no default view set. Pass an ID (the number in \
+             .../agent/filters/<ID>), or run `zd config set --default-view <ID>`. \
+             List views with `zd view list`."
+        ),
+    }
+}
+
 fn config_cmd(g: &GlobalArgs, cmd: &ConfigCommand) -> Result<()> {
     match cmd {
         ConfigCommand::Path => println!("{}", config::config_path()?.display()),
@@ -293,12 +355,19 @@ fn config_cmd(g: &GlobalArgs, cmd: &ConfigCommand) -> Result<()> {
                     "email": cfg.email,
                     "api_token": masked,
                     "api_token_source": source.label(),
+                    "default_view": cfg.default_view,
                     "base_url": cfg.base_url(),
                 }))?,
                 Format::Human => {
                     println!("subdomain   : {}", cfg.subdomain);
                     println!("email       : {}", cfg.email);
                     println!("api_token   : {masked}  (from {})", source.label());
+                    println!(
+                        "default_view: {}",
+                        cfg.default_view
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "-".into())
+                    );
                     println!("base_url    : {}", cfg.base_url());
                     if source == config::TokenSource::LegacyFile {
                         println!(
@@ -313,9 +382,16 @@ fn config_cmd(g: &GlobalArgs, cmd: &ConfigCommand) -> Result<()> {
             subdomain,
             email,
             api_token,
+            default_view,
         } => {
-            if subdomain.is_none() && email.is_none() && api_token.is_none() {
-                anyhow::bail!("nothing to set; pass --subdomain, --email, and/or --api-token");
+            if subdomain.is_none()
+                && email.is_none()
+                && api_token.is_none()
+                && default_view.is_none()
+            {
+                anyhow::bail!(
+                    "nothing to set; pass --subdomain, --email, --api-token, and/or --default-view"
+                );
             }
 
             let mut messages = Vec::new();
@@ -334,10 +410,14 @@ fn config_cmd(g: &GlobalArgs, cmd: &ConfigCommand) -> Result<()> {
                 false
             };
 
-            if subdomain.is_some() || email.is_some() || clear_legacy {
-                let path =
-                    config::save_nonsecret(subdomain.clone(), email.clone(), clear_legacy)?;
-                messages.push(format!("Saved subdomain/email to {}", path.display()));
+            if subdomain.is_some() || email.is_some() || default_view.is_some() || clear_legacy {
+                let path = config::save_nonsecret(
+                    subdomain.clone(),
+                    email.clone(),
+                    *default_view,
+                    clear_legacy,
+                )?;
+                messages.push(format!("Saved settings to {}", path.display()));
             }
 
             for m in messages {
@@ -386,6 +466,9 @@ COMMON COMMANDS
   zd ticket list --limit 20         List recent tickets.
   zd ticket search status:open      Search (Zendesk query syntax).
   zd ticket comments 12345          Read all replies (labeled PUBLIC/INTERNAL).
+  zd view list                      List views (agent filters) with IDs.
+  zd view tickets 1500014631401     Tickets in a view (agent filter).
+  zd view tickets                   Tickets in the configured default view.
   zd reply 12345 --internal --body "Looking into this."
   zd reply 12345 --public   --body "Thanks — fixed now!"
   echo "long text" | zd reply 12345 --public --stdin

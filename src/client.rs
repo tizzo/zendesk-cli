@@ -117,6 +117,21 @@ impl ZendeskClient {
         Ok(resp.ticket)
     }
 
+    /// List views (agent filters). `GET /views.json`
+    pub async fn list_views(&self) -> Result<Vec<View>> {
+        let resp: ViewsResponse = self
+            .send(self.request(Method::GET, "/views.json?active=true"))
+            .await?;
+        Ok(resp.views)
+    }
+
+    /// Tickets in a view. `GET /views/{id}/tickets.json`
+    pub async fn list_view_tickets(&self, view_id: i64, per_page: u32) -> Result<Vec<Ticket>> {
+        let path = format!("/views/{view_id}/tickets.json?per_page={per_page}");
+        let resp: TicketsResponse = self.send(self.request(Method::GET, &path)).await?;
+        Ok(resp.tickets)
+    }
+
     /// `GET /users/me.json` — verify credentials.
     pub async fn whoami(&self) -> Result<User> {
         let resp: UserResponse = self

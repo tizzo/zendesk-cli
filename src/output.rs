@@ -4,7 +4,7 @@
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::models::{Comment, Ticket, User};
+use crate::models::{Comment, Ticket, User, View};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -58,6 +58,17 @@ pub fn tickets_table(tickets: &[Ticket]) {
             t.priority.as_deref().unwrap_or("-"),
             subject
         );
+    }
+}
+
+pub fn views_table(views: &[View]) {
+    if views.is_empty() {
+        println!("(no views)");
+        return;
+    }
+    println!("{:<16}  TITLE", "ID");
+    for v in views {
+        println!("{:<16}  {}", v.id, v.title.as_deref().unwrap_or("-"));
     }
 }
 

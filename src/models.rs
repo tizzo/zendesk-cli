@@ -97,3 +97,25 @@ pub struct User {
 pub struct UserResponse {
     pub user: User,
 }
+
+/// A Zendesk view (called an "agent filter" in the agent UI). The numeric ID
+/// is the trailing segment of `.../agent/filters/{id}`.
+///
+/// See <https://developer.zendesk.com/api-reference/ticketing/business-rules/views/>.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct View {
+    pub id: i64,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub active: bool,
+}
+
+/// Wrapper for `GET /views.json`.
+#[derive(Debug, Deserialize)]
+pub struct ViewsResponse {
+    pub views: Vec<View>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub next_page: Option<String>,
+}

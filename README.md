@@ -58,6 +58,12 @@ zd ticket list --limit 20                   # recent tickets
 zd ticket search status:open priority:high  # Zendesk search syntax
 zd ticket comments 12345                    # read replies (labeled PUBLIC/INTERNAL)
 
+# Views (a.k.a. agent filters — the .../agent/filters/<ID> pages):
+zd view list                                # list views with their IDs
+zd view tickets 1500014631401               # tickets in a specific view
+zd config set --default-view 1500014631401  # remember your usual queue
+zd view tickets                             # ...then just run this
+
 # Write replies — visibility is REQUIRED and explicit:
 zd reply 12345 --internal --body "Investigating, will update shortly."
 zd reply 12345 --public   --body "Thanks for your patience — this is resolved."

@@ -47,6 +47,8 @@ pub struct Config {
     pub subdomain: String,
     pub email: String,
     pub api_token: String,
+    /// Default view (agent filter) ID for `zd view tickets` with no argument.
+    pub default_view: Option<i64>,
 }
 
 /// On-disk config file shape. All fields optional so a partial file is valid.
@@ -55,6 +57,7 @@ pub struct FileConfig {
     pub subdomain: Option<String>,
     pub email: Option<String>,
     pub api_token: Option<String>,
+    pub default_view: Option<i64>,
 }
 
 /// CLI-provided overrides, threaded down from the global args.
@@ -147,6 +150,7 @@ pub fn resolve_with_source(overrides: &Overrides) -> Result<(Config, TokenSource
             subdomain,
             email,
             api_token,
+            default_view: file.default_view,
         },
         source,
     ))
@@ -160,6 +164,7 @@ pub fn resolve_with_source(overrides: &Overrides) -> Result<(Config, TokenSource
 pub fn save_nonsecret(
     subdomain: Option<String>,
     email: Option<String>,
+    default_view: Option<i64>,
     clear_legacy_token: bool,
 ) -> Result<PathBuf> {
     let path = config_path()?;
@@ -170,6 +175,9 @@ pub fn save_nonsecret(
     }
     if email.is_some() {
         current.email = email;
+    }
+    if default_view.is_some() {
+        current.default_view = default_view;
     }
     if clear_legacy_token {
         current.api_token = None;

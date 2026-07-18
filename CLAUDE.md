@@ -35,6 +35,12 @@ Posting a reply is a `PUT /tickets/{id}.json` with a nested `comment` object —
 see `ZendeskClient::add_comment`. Reading replies is
 `GET /tickets/{id}/comments.json` — see `list_comments`.
 
+A "view" (called an **agent filter** in the UI: `.../agent/filters/<ID>`) is a
+saved ticket queue. `zd view tickets <id>` hits `GET /views/{id}/tickets.json`
+(`list_view_tickets`); `zd view list` hits `GET /views.json`. A default view ID
+can be stored in the config file (`default_view`) so `zd view tickets` needs no
+argument — see `resolve_view_id` in `main.rs`.
+
 ## Conventions to preserve
 
 - **Every command supports `--json`.** When adding output, render both a human
