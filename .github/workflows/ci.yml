@@ -20,6 +20,9 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install libdbus (Linux keychain backend)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
       - name: Cache
         uses: Swatinem/rust-cache@v2
 
