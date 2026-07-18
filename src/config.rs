@@ -49,6 +49,9 @@ pub struct Config {
     pub api_token: String,
     /// Default view (agent filter) ID for `zd view tickets` with no argument.
     pub default_view: Option<i64>,
+    /// Overrides the derived API base URL. Set via the hidden `ZENDESK_BASE_URL`
+    /// env var; used for testing against a mock server (and advanced routing).
+    pub base_url_override: Option<String>,
 }
 
 /// On-disk config file shape. All fields optional so a partial file is valid.
@@ -71,7 +74,9 @@ pub struct Overrides {
 impl Config {
     /// The base API URL, e.g. `https://acme.zendesk.com/api/v2`.
     pub fn base_url(&self) -> String {
-        format!("https://{}.zendesk.com/api/v2", self.subdomain)
+        self.base_url_override
+            .clone()
+            .unwrap_or_else(|| format!("https://{}.zendesk.com/api/v2", self.subdomain))
     }
 
     /// Basic-auth username per Zendesk's API-token scheme.
@@ -150,12 +155,17 @@ pub fn resolve_with_source(overrides: &Overrides) -> Result<(Config, TokenSource
         ));
     };
 
+    let base_url_override = std::env::var("ZENDESK_BASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty());
+
     Ok((
         Config {
             subdomain,
             email,
             api_token,
             default_view: file.default_view,
+            base_url_override,
         },
         source,
     ))
@@ -214,4 +224,77 @@ pub fn resolve_subdomain(overrides: &Overrides) -> Result<String> {
 /// access, so `zd view tickets` (with no ID) doesn't trigger a credential fetch.
 pub fn default_view() -> Result<Option<i64>> {
     Ok(load_file()?.default_view)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(subdomain: &str, base_url_override: Option<&str>) -> Config {
+        Config {
+            subdomain: subdomain.into(),
+            email: "e@x.com".into(),
+            api_token: "tok".into(),
+            default_view: None,
+            base_url_override: base_url_override.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn base_url_derived_from_subdomain() {
+        assert_eq!(
+            cfg("acme", None).base_url(),
+            "https://acme.zendesk.com/api/v2"
+        );
+    }
+
+    #[test]
+    fn base_url_override_wins() {
+        assert_eq!(
+            cfg("acme", Some("http://localhost:1234/api/v2")).base_url(),
+            "http://localhost:1234/api/v2"
+        );
+    }
+
+    #[test]
+    fn basic_auth_user_appends_token_scheme() {
+        assert_eq!(cfg("acme", None).basic_auth_user(), "e@x.com/token");
+    }
+
+    #[test]
+    fn pick_prefers_flag_over_env_and_file() {
+        // Unique env name so parallel tests never collide on it.
+        assert_eq!(
+            pick(&Some("flag".into()), "ZD_TEST_PICK_1", Some("file".into())),
+            Some("flag".into())
+        );
+    }
+
+    #[test]
+    fn pick_uses_env_over_file() {
+        std::env::set_var("ZD_TEST_PICK_2", "envval");
+        assert_eq!(
+            pick(&None, "ZD_TEST_PICK_2", Some("file".into())),
+            Some("envval".into())
+        );
+        std::env::remove_var("ZD_TEST_PICK_2");
+    }
+
+    #[test]
+    fn pick_ignores_empty_env() {
+        std::env::set_var("ZD_TEST_PICK_3", "");
+        assert_eq!(
+            pick(&None, "ZD_TEST_PICK_3", Some("file".into())),
+            Some("file".into())
+        );
+        std::env::remove_var("ZD_TEST_PICK_3");
+    }
+
+    #[test]
+    fn pick_falls_back_to_file() {
+        assert_eq!(
+            pick(&None, "ZD_TEST_PICK_4_UNSET", Some("file".into())),
+            Some("file".into())
+        );
+    }
 }

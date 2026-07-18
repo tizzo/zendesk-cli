@@ -81,5 +81,30 @@ still work offline. `zd whoami` is the cheapest way to validate auth.
 
 ```sh
 cargo build            # or cargo build --release
-cargo clippy           # lint (if installed)
+cargo clippy --all-targets -- -D warnings
+cargo test             # unit + integration; no network
 ```
+
+## Tests (what's covered, and how to add more)
+
+- **Unit tests** are `#[cfg(test)]` modules in `src/` (idref, config precedence,
+  `status_matches`, `url_encode`, `validate_statuses`, `mask`, and a
+  `Cli::command().debug_assert()` structure check).
+- **Integration tests** in `tests/` drive the built binary via `assert_cmd`:
+  - `tests/cli_offline.rs` — help/docs, arg validation, the reply-visibility guard.
+  - `tests/api_contract.rs` — runs against a `httpmock` server, asserting the
+    `--json` shapes and that `reply` sends the right `public` flag.
+  - `tests/common/mod.rs` — `isolated_cmd()` gives a `zd` command with a temp
+    `HOME` and env-provided creds (so no real config/keychain is touched);
+    tests point it at the mock via the hidden `ZENDESK_BASE_URL` env var.
+- To test a new API command: add a client method, then a mock-server test that
+  pins its `--json` contract. `ZENDESK_BASE_URL` (see `config::resolve_with_source`)
+  is the seam that makes the client point at any base URL.
+
+## CI / releases
+
+- `.github/workflows/ci.yml` — fmt + clippy + tests on Linux (push + PR).
+- `.github/workflows/release.yml` — on push to `main`: Linux unit tests gate →
+  build macOS (arm64 + x86_64), Windows, Linux → auto-publish a GitHub Release
+  tagged `v<version>-<run_number>`. Bump `version` in `Cargo.toml` for a new
+  version line.

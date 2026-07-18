@@ -261,3 +261,59 @@ fn url_encode(input: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ticket(status: Option<&str>) -> Ticket {
+        Ticket {
+            id: 1,
+            subject: None,
+            description: None,
+            status: status.map(str::to_string),
+            priority: None,
+            requester_id: None,
+            assignee_id: None,
+            tags: vec![],
+            created_at: None,
+            updated_at: None,
+            url: None,
+        }
+    }
+
+    #[test]
+    fn empty_filter_matches_everything() {
+        assert!(status_matches(&ticket(Some("open")), &[]));
+        assert!(status_matches(&ticket(None), &[]));
+    }
+
+    #[test]
+    fn filter_is_case_insensitive() {
+        assert!(status_matches(&ticket(Some("Open")), &["open".to_string()]));
+        assert!(status_matches(&ticket(Some("open")), &["OPEN".to_string()]));
+    }
+
+    #[test]
+    fn non_matching_status_is_excluded() {
+        assert!(!status_matches(
+            &ticket(Some("closed")),
+            &["open".to_string()]
+        ));
+    }
+
+    #[test]
+    fn missing_status_never_matches_a_filter() {
+        assert!(!status_matches(&ticket(None), &["open".to_string()]));
+    }
+
+    #[test]
+    fn url_encode_escapes_reserved_and_spaces() {
+        assert_eq!(url_encode("status:open a"), "status%3Aopen%20a");
+    }
+
+    #[test]
+    fn url_encode_preserves_unreserved() {
+        assert_eq!(url_encode("Abc-1_2.3~"), "Abc-1_2.3~");
+    }
+}

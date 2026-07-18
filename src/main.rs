@@ -571,3 +571,45 @@ SAFETY
   `zd reply` requires an explicit --public or --internal; there is no default,
   so a customer-facing reply is never sent by accident.
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_is_valid() {
+        // Catches conflicting args, bad value parsers, duplicate flags, etc.
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn validate_statuses_normalizes_case() {
+        assert_eq!(
+            validate_statuses(&["Open".into(), "NEW".into()]).unwrap(),
+            vec!["open".to_string(), "new".to_string()]
+        );
+    }
+
+    #[test]
+    fn validate_statuses_rejects_unknown() {
+        assert!(validate_statuses(&["bogus".into()]).is_err());
+    }
+
+    #[test]
+    fn validate_statuses_skips_blanks() {
+        assert!(validate_statuses(&["".into(), "  ".into()])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn mask_hides_all_of_a_short_token() {
+        assert_eq!(mask("abc"), "****");
+    }
+
+    #[test]
+    fn mask_reveals_only_last_four() {
+        assert_eq!(mask("abcdef123456"), "****3456");
+    }
+}

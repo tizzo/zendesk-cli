@@ -96,13 +96,36 @@ In Zendesk, a "reply" is a **ticket comment**:
 `--public` or `--internal`, so a customer-facing message is never sent by
 accident.
 
+## Install a prebuilt binary
+
+Every push to `main` publishes a GitHub Release with binaries for macOS
+(Apple Silicon + Intel), Windows, and Linux. Download the archive for your
+platform from the [Releases page](../../releases/latest), extract it, and put
+`zd` on your `PATH`.
+
 ## Development
 
 ```sh
 cargo build          # debug build
 cargo build --release
 cargo run -- docs    # print the built-in overview
+cargo test           # unit + integration tests (no network; uses a mock server)
+cargo clippy --all-targets -- -D warnings
 ```
+
+### Tests
+
+- **Unit tests** live beside the code (`#[cfg(test)]`): ID/URL parsing, config
+  precedence, status matching, URL encoding, arg validation, and a clap
+  structure check.
+- **Integration tests** (`tests/`) run the compiled `zd` against a mock HTTP
+  server (`httpmock`), locking the `--json` output contracts that scripts and
+  Claude Code workflows depend on, and asserting that `reply --public/--internal`
+  sends the correct `public` flag. They set `ZENDESK_BASE_URL` to point the CLI
+  at the mock and never touch the network or the real keychain.
+
+CI (`.github/workflows/ci.yml`) runs fmt + clippy + tests on Linux for every
+push and PR.
 
 Source layout:
 
