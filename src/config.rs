@@ -97,6 +97,14 @@ fn load_file() -> Result<FileConfig> {
     toml::from_str(&text).with_context(|| format!("parsing config file {}", path.display()))
 }
 
+/// Resolve one string setting by precedence: CLI flag → env var (ignoring
+/// empty) → config file. This is the single source of truth for that order.
+fn pick(flag: &Option<String>, env: &str, from_file: Option<String>) -> Option<String> {
+    flag.clone()
+        .or_else(|| std::env::var(env).ok().filter(|s| !s.is_empty()))
+        .or(from_file)
+}
+
 /// Resolve a full [`Config`] from overrides, env, keychain, and file.
 pub fn resolve(overrides: &Overrides) -> Result<Config> {
     Ok(resolve_with_source(overrides)?.0)
@@ -109,18 +117,12 @@ pub fn resolve(overrides: &Overrides) -> Result<Config> {
 pub fn resolve_with_source(overrides: &Overrides) -> Result<(Config, TokenSource)> {
     let file = load_file()?;
 
-    let pick = |flag: &Option<String>, env: &str, from_file: Option<String>| -> Option<String> {
-        flag.clone()
-            .or_else(|| std::env::var(env).ok().filter(|s| !s.is_empty()))
-            .or(from_file)
-    };
-
     let missing = |name: &str| {
+        let flag = name.replace('_', "-");
+        let env = format!("ZENDESK_{}", name.to_uppercase());
         anyhow!(
             "missing {name}. Set it via --{flag}, the {env} env var, or run `zd config set`. \
-             See `zd config path` for the config file location.",
-            flag = name.replace('_', "-"),
-            env = format!("ZENDESK_{}", name.to_uppercase()),
+             See `zd config path` for the config file location."
         )
     };
 
@@ -132,7 +134,10 @@ pub fn resolve_with_source(overrides: &Overrides) -> Result<(Config, TokenSource
     // Token: flag → env → keychain (by subdomain) → legacy file.
     let (api_token, source) = if let Some(t) = overrides.api_token.clone() {
         (t, TokenSource::Flag)
-    } else if let Some(t) = std::env::var("ZENDESK_API_TOKEN").ok().filter(|s| !s.is_empty()) {
+    } else if let Some(t) = std::env::var("ZENDESK_API_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
         (t, TokenSource::Env)
     } else if let Some(t) = keychain::get_token(&subdomain)? {
         (t, TokenSource::Keychain)
@@ -197,15 +202,16 @@ pub fn save_nonsecret(
 /// Used when storing a token so we know which keychain entry to write.
 pub fn resolve_subdomain(overrides: &Overrides) -> Result<String> {
     let file = load_file()?;
-    overrides
-        .subdomain
-        .clone()
-        .or_else(|| std::env::var("ZENDESK_SUBDOMAIN").ok().filter(|s| !s.is_empty()))
-        .or(file.subdomain)
-        .ok_or_else(|| {
-            anyhow!(
-                "a subdomain is required to store the token (the keychain entry is keyed by it). \
-                 Pass --subdomain, set ZENDESK_SUBDOMAIN, or include it in `zd config set`."
-            )
-        })
+    pick(&overrides.subdomain, "ZENDESK_SUBDOMAIN", file.subdomain).ok_or_else(|| {
+        anyhow!(
+            "a subdomain is required to store the token (the keychain entry is keyed by it). \
+             Pass --subdomain, set ZENDESK_SUBDOMAIN, or include it in `zd config set`."
+        )
+    })
+}
+
+/// Read the configured default view ID from the config file only — no keychain
+/// access, so `zd view tickets` (with no ID) doesn't trigger a credential fetch.
+pub fn default_view() -> Result<Option<i64>> {
+    Ok(load_file()?.default_view)
 }

@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 
 use client::ZendeskClient;
-use config::{Overrides, Config};
+use config::{Config, Overrides};
 use output::{print_json, Format};
 
 /// Read and write Zendesk ticket replies — public and internal — from the terminal.
@@ -225,19 +225,13 @@ async fn run() -> Result<()> {
     match &cli.command {
         Command::Whoami => {
             let user = g.client()?.whoami().await?;
-            match g.format() {
-                Format::Json => print_json(&user)?,
-                Format::Human => output::user_human(&user),
-            }
+            emit(g, &user, output::user_human)?;
         }
 
         Command::Ticket(cmd) => match cmd {
             TicketCommand::Show { id } => {
                 let ticket = g.client()?.get_ticket(*id).await?;
-                match g.format() {
-                    Format::Json => print_json(&ticket)?,
-                    Format::Human => output::ticket_human(&ticket),
-                }
+                emit(g, &ticket, output::ticket_human)?;
             }
             TicketCommand::List { limit, status } => {
                 let statuses = validate_statuses(status)?;
@@ -254,20 +248,14 @@ async fn run() -> Result<()> {
             }
             TicketCommand::Comments { id } => {
                 let comments = g.client()?.list_comments(*id).await?;
-                match g.format() {
-                    Format::Json => print_json(&comments)?,
-                    Format::Human => output::comments_human(*id, &comments),
-                }
+                emit(g, &comments, |c| output::comments_human(*id, c))?;
             }
         },
 
         Command::View(cmd) => match cmd {
             ViewCommand::List => {
                 let views = g.client()?.list_views().await?;
-                match g.format() {
-                    Format::Json => print_json(&views)?,
-                    Format::Human => output::views_table(&views),
-                }
+                emit(g, &views, |v| output::views_table(v))?;
             }
             ViewCommand::Tickets {
                 id,
@@ -275,7 +263,7 @@ async fn run() -> Result<()> {
                 all,
                 status,
             } => {
-                let view_id = resolve_view_id(g, *id)?;
+                let view_id = resolve_view_id(*id)?;
                 let statuses = validate_statuses(status)?;
                 let cap = if *all { None } else { Some(*limit as usize) };
                 let list = g
@@ -321,7 +309,11 @@ async fn reply(g: &GlobalArgs, args: &ReplyArgs) -> Result<()> {
             "posted": true,
         }))?,
         Format::Human => {
-            let kind = if public { "public reply" } else { "internal note" };
+            let kind = if public {
+                "public reply"
+            } else {
+                "internal note"
+            };
             println!("Posted {kind} to ticket #{}.", ticket.id);
         }
     }
@@ -368,6 +360,17 @@ fn validate_statuses(input: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// Render `value` honoring the global `--json` flag: as pretty JSON, or via the
+/// supplied human-formatting function. Centralizes the format decision so every
+/// command respects `--json` without repeating the match.
+fn emit<T: serde::Serialize>(g: &GlobalArgs, value: &T, human: impl FnOnce(&T)) -> Result<()> {
+    match g.format() {
+        Format::Json => print_json(value)?,
+        Format::Human => human(value),
+    }
+    Ok(())
+}
+
 /// Render a [`client::TicketList`] as JSON (object with count metadata) or a
 /// human table with a summary line.
 fn emit_ticket_list(
@@ -406,11 +409,11 @@ fn emit_ticket_list(
 
 /// Resolve the view ID from an explicit argument, falling back to the
 /// configured default view.
-fn resolve_view_id(g: &GlobalArgs, arg: Option<i64>) -> Result<i64> {
+fn resolve_view_id(arg: Option<i64>) -> Result<i64> {
     if let Some(id) = arg {
         return Ok(id);
     }
-    match config::resolve_with_source(&g.overrides())?.0.default_view {
+    match config::default_view()? {
         Some(id) => Ok(id),
         None => anyhow::bail!(
             "no view ID given and no default view set. Pass an ID (the number in \
@@ -481,7 +484,9 @@ fn config_cmd(g: &GlobalArgs, cmd: &ConfigCommand) -> Result<()> {
                     .map(Ok)
                     .unwrap_or_else(|| config::resolve_subdomain(&g.overrides()))?;
                 keychain::store_token(&sub, token)?;
-                messages.push(format!("Stored API token in the OS keychain (subdomain '{sub}')."));
+                messages.push(format!(
+                    "Stored API token in the OS keychain (subdomain '{sub}')."
+                ));
                 true
             } else {
                 false

@@ -55,9 +55,6 @@ pub struct SearchResponse {
     #[serde(default)]
     pub results: Vec<Ticket>,
     #[serde(default)]
-    #[allow(dead_code)]
-    pub next_page: Option<String>,
-    #[serde(default)]
     pub count: Option<i64>,
 }
 

@@ -50,25 +50,26 @@ impl ZendeskClient {
         })
     }
 
+    /// Attach the shared auth + accept headers to any request builder.
+    fn authed(&self, rb: RequestBuilder) -> RequestBuilder {
+        rb.header(reqwest::header::AUTHORIZATION, &self.auth_header)
+            .header(reqwest::header::ACCEPT, "application/json")
+    }
+
     fn request(&self, method: Method, path: &str) -> RequestBuilder {
         let url = format!("{}{}", self.base_url, path);
-        self.http
-            .request(method, url)
-            .header(reqwest::header::AUTHORIZATION, &self.auth_header)
-            .header(reqwest::header::ACCEPT, "application/json")
+        self.authed(self.http.request(method, url))
     }
 
     /// GET a relative path (e.g. `/tickets.json`) or an absolute URL (used for
     /// following the `next_page` links returned by paginated endpoints).
     fn get(&self, path_or_url: &str) -> RequestBuilder {
-        if path_or_url.starts_with("http") {
-            self.http
-                .get(path_or_url)
-                .header(reqwest::header::AUTHORIZATION, &self.auth_header)
-                .header(reqwest::header::ACCEPT, "application/json")
+        let url = if path_or_url.starts_with("http") {
+            path_or_url.to_string()
         } else {
-            self.request(Method::GET, path_or_url)
-        }
+            format!("{}{}", self.base_url, path_or_url)
+        };
+        self.authed(self.http.get(url))
     }
 
     /// Send a request and deserialize a successful JSON body, turning Zendesk
@@ -84,7 +85,9 @@ impl ZendeskClient {
         }
 
         let hint = match status {
-            StatusCode::UNAUTHORIZED => " (check email + API token; username must be `email/token`)",
+            StatusCode::UNAUTHORIZED => {
+                " (check email + API token; username must be `email/token`)"
+            }
             StatusCode::FORBIDDEN => " (token or user lacks permission for this action)",
             StatusCode::NOT_FOUND => " (ticket or resource not found)",
             StatusCode::TOO_MANY_REQUESTS => " (rate limited; retry later)",
@@ -139,7 +142,10 @@ impl ZendeskClient {
         statuses: &[String],
     ) -> Result<TicketList> {
         let full_query = format!("type:ticket {query}");
-        let path = format!("/search.json?query={}&per_page=100", url_encode(&full_query));
+        let path = format!(
+            "/search.json?query={}&per_page=100",
+            url_encode(&full_query)
+        );
         let resp: SearchResponse = self.send(self.get(&path)).await?;
         let mut tickets: Vec<Ticket> = resp
             .results
@@ -239,13 +245,18 @@ impl ZendeskClient {
 
 /// Minimal percent-encoding for query values (spaces, reserved chars).
 fn url_encode(input: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(input.len());
     for byte in input.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(byte as char)
             }
-            _ => out.push_str(&format!("%{byte:02X}")),
+            _ => {
+                out.push('%');
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0x0f) as usize] as char);
+            }
         }
     }
     out
