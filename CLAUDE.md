@@ -19,6 +19,7 @@ Zendesk ticket replies.
 | `src/models.rs` | serde structs for the Zendesk API subset used          |
 | `src/config.rs` | credential resolution: flags → env → keychain → file   |
 | `src/keychain.rs` | secure API-token storage in the OS keychain (`keyring`) |
+| `src/idref.rs`  | parse a resource ID from a bare number OR an interface URL |
 | `src/output.rs` | `Format::{Human,Json}` rendering                       |
 
 To add a command: add a variant to the relevant `enum` in `main.rs`, add a
@@ -40,6 +41,16 @@ saved ticket queue. `zd view tickets <id>` hits `GET /views/{id}/tickets.json`
 (`list_view_tickets`); `zd view list` hits `GET /views.json`. A default view ID
 can be stored in the config file (`default_view`) so `zd view tickets` needs no
 argument — see `resolve_view_id` in `main.rs`.
+
+Ticket/view **ID arguments also accept interface URLs** — every ID arg uses
+`idref::parse_id` as its clap `value_parser`, which extracts the last numeric
+path segment from a URL (so pasting `.../agent/tickets/123` works everywhere).
+
+Ticket listings (`ticket list`, `ticket search`, `view tickets`) share
+`ZendeskClient::collect_tickets`, which paginates via `next_page` and applies a
+client-side `--status` filter, returning a `TicketList { tickets, total }`.
+`--all` fetches every page (bounded by a `MAX_PAGES` safety cap). Rendering goes
+through `emit_ticket_list` in `main.rs`.
 
 ## Conventions to preserve
 

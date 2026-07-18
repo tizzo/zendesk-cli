@@ -15,6 +15,23 @@ pub struct ZendeskClient {
     auth_header: String,
 }
 
+/// A page-spanning ticket result plus the view/query's total count.
+pub struct TicketList {
+    pub tickets: Vec<Ticket>,
+    /// Total tickets matching (across all pages), if the API reported it.
+    pub total: Option<i64>,
+}
+
+/// True if the ticket's status matches any of `statuses` (case-insensitive).
+/// An empty filter matches everything.
+fn status_matches(ticket: &Ticket, statuses: &[String]) -> bool {
+    statuses.is_empty()
+        || ticket
+            .status
+            .as_deref()
+            .is_some_and(|s| statuses.iter().any(|w| w.eq_ignore_ascii_case(s)))
+}
+
 impl ZendeskClient {
     pub fn new(config: &Config) -> Result<Self> {
         let http = Client::builder()
@@ -39,6 +56,19 @@ impl ZendeskClient {
             .request(method, url)
             .header(reqwest::header::AUTHORIZATION, &self.auth_header)
             .header(reqwest::header::ACCEPT, "application/json")
+    }
+
+    /// GET a relative path (e.g. `/tickets.json`) or an absolute URL (used for
+    /// following the `next_page` links returned by paginated endpoints).
+    fn get(&self, path_or_url: &str) -> RequestBuilder {
+        if path_or_url.starts_with("http") {
+            self.http
+                .get(path_or_url)
+                .header(reqwest::header::AUTHORIZATION, &self.auth_header)
+                .header(reqwest::header::ACCEPT, "application/json")
+        } else {
+            self.request(Method::GET, path_or_url)
+        }
     }
 
     /// Send a request and deserialize a successful JSON body, turning Zendesk
@@ -79,22 +109,95 @@ impl ZendeskClient {
         Ok(resp.comments)
     }
 
-    /// List recent tickets. `GET /tickets.json` (sorted newest first via sideload-free params).
-    pub async fn list_tickets(&self, per_page: u32) -> Result<Vec<Ticket>> {
-        let path = format!("/tickets.json?sort_by=created_at&sort_order=desc&per_page={per_page}");
-        let resp: TicketsResponse = self.send(self.request(Method::GET, &path)).await?;
-        Ok(resp.tickets)
+    /// List recent tickets (newest first), following pagination up to `limit`.
+    pub async fn list_tickets(&self, limit: usize, statuses: &[String]) -> Result<TicketList> {
+        let path = "/tickets.json?sort_by=created_at&sort_order=desc&per_page=100".to_string();
+        self.collect_tickets(path, Some(limit), statuses).await
+    }
+
+    /// Tickets in a view (agent filter). `GET /views/{id}/tickets.json`.
+    ///
+    /// `limit == None` fetches every page; otherwise pagination stops once
+    /// `limit` matching tickets are collected. `statuses` filters client-side.
+    pub async fn list_view_tickets(
+        &self,
+        view_id: i64,
+        limit: Option<usize>,
+        statuses: &[String],
+    ) -> Result<TicketList> {
+        let path = format!("/views/{view_id}/tickets.json?per_page=100");
+        self.collect_tickets(path, limit, statuses).await
     }
 
     /// Search tickets using Zendesk search syntax. `GET /search.json?query=...`
-    pub async fn search_tickets(&self, query: &str) -> Result<Vec<Ticket>> {
-        // Constrain to tickets and URL-encode the query.
+    ///
+    /// The Search API returns results under `results` (not `tickets`).
+    pub async fn search_tickets(
+        &self,
+        query: &str,
+        limit: usize,
+        statuses: &[String],
+    ) -> Result<TicketList> {
         let full_query = format!("type:ticket {query}");
-        let encoded: String =
-            url_encode(&full_query);
-        let path = format!("/search.json?query={encoded}");
-        let resp: TicketsResponse = self.send(self.request(Method::GET, &path)).await?;
-        Ok(resp.tickets)
+        let path = format!("/search.json?query={}&per_page=100", url_encode(&full_query));
+        let resp: SearchResponse = self.send(self.get(&path)).await?;
+        let mut tickets: Vec<Ticket> = resp
+            .results
+            .into_iter()
+            .filter(|t| status_matches(t, statuses))
+            .collect();
+        tickets.truncate(limit);
+        Ok(TicketList {
+            tickets,
+            total: resp.count,
+        })
+    }
+
+    /// Fetch tickets across pages from `first_path`, applying an optional status
+    /// filter, stopping once `limit` matching tickets are collected (or after
+    /// exhausting pages / a safety cap when `limit` is `None`).
+    async fn collect_tickets(
+        &self,
+        first_path: String,
+        limit: Option<usize>,
+        statuses: &[String],
+    ) -> Result<TicketList> {
+        // Safety cap so a runaway `next_page` chain can't loop forever.
+        const MAX_PAGES: usize = 100;
+
+        let mut url = first_path;
+        let mut collected: Vec<Ticket> = Vec::new();
+        let mut total: Option<i64> = None;
+        let mut pages = 0usize;
+
+        loop {
+            let resp: TicketsResponse = self.send(self.get(&url)).await?;
+            if total.is_none() {
+                total = resp.count;
+            }
+            for t in resp.tickets {
+                if status_matches(&t, statuses) {
+                    collected.push(t);
+                }
+            }
+            pages += 1;
+
+            if let Some(l) = limit {
+                if collected.len() >= l {
+                    collected.truncate(l);
+                    break;
+                }
+            }
+            match resp.next_page {
+                Some(next) if pages < MAX_PAGES => url = next,
+                _ => break,
+            }
+        }
+
+        Ok(TicketList {
+            tickets: collected,
+            total,
+        })
     }
 
     /// Add a reply (comment) to a ticket via `PUT /tickets/{id}.json`.
@@ -123,13 +226,6 @@ impl ZendeskClient {
             .send(self.request(Method::GET, "/views.json?active=true"))
             .await?;
         Ok(resp.views)
-    }
-
-    /// Tickets in a view. `GET /views/{id}/tickets.json`
-    pub async fn list_view_tickets(&self, view_id: i64, per_page: u32) -> Result<Vec<Ticket>> {
-        let path = format!("/views/{view_id}/tickets.json?per_page={per_page}");
-        let resp: TicketsResponse = self.send(self.request(Method::GET, &path)).await?;
-        Ok(resp.tickets)
     }
 
     /// `GET /users/me.json` — verify credentials.

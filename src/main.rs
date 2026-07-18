@@ -6,6 +6,7 @@
 
 mod client;
 mod config;
+mod idref;
 mod keychain;
 mod models;
 mod output;
@@ -102,26 +103,34 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum TicketCommand {
-    /// Show a single ticket's fields.
+    /// Show a single ticket, including its description.
     Show {
-        /// Numeric ticket ID.
+        /// Ticket ID or any Zendesk ticket URL (e.g. .../agent/tickets/1162117).
+        #[arg(value_parser = idref::parse_id)]
         id: i64,
     },
     /// List recent tickets (newest first).
     List {
-        /// Maximum number of tickets to return (1-100).
-        #[arg(long, default_value_t = 25, value_parser = clap::value_parser!(u32).range(1..=100))]
+        /// Maximum number of tickets to return (1-1000; paginates as needed).
+        #[arg(long, default_value_t = 25, value_parser = clap::value_parser!(u32).range(1..=1000))]
         limit: u32,
+        /// Filter by status (comma-separated): new,open,pending,hold,solved,closed.
+        #[arg(long, value_delimiter = ',')]
+        status: Vec<String>,
     },
     /// Search tickets using Zendesk search syntax, e.g. `status:open requester:a@b.com`.
     Search {
         /// Query terms (joined with spaces). `type:ticket` is added automatically.
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
+        /// Also filter results by status (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        status: Vec<String>,
     },
     /// List a ticket's replies, labeling each PUBLIC or INTERNAL.
     Comments {
-        /// Numeric ticket ID.
+        /// Ticket ID or any Zendesk ticket URL.
+        #[arg(value_parser = idref::parse_id)]
         id: i64,
     },
 }
@@ -136,17 +145,25 @@ enum ViewCommand {
     /// (`.../agent/filters/1500014631401`). Omit it to use the configured
     /// default view (`zd config set --default-view <ID>`).
     Tickets {
-        /// View ID. Defaults to the configured default view if omitted.
+        /// View ID or agent-filter URL. Defaults to the configured default view.
+        #[arg(value_parser = idref::parse_id)]
         id: Option<i64>,
-        /// Maximum number of tickets to return (1-100).
-        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=100))]
+        /// Maximum number of tickets to return (paginates as needed).
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=1000))]
         limit: u32,
+        /// Fetch every ticket in the view (ignores --limit; follows all pages).
+        #[arg(long)]
+        all: bool,
+        /// Filter by status (comma-separated): new,open,pending,hold,solved,closed.
+        #[arg(long, value_delimiter = ',')]
+        status: Vec<String>,
     },
 }
 
 #[derive(Args, Debug)]
 struct ReplyArgs {
-    /// Numeric ticket ID to reply to.
+    /// Ticket ID or any Zendesk ticket URL to reply to.
+    #[arg(value_parser = idref::parse_id)]
     id: i64,
 
     /// Reply text. Use `--file` or `--stdin` instead for long or multi-line bodies.
@@ -222,19 +239,18 @@ async fn run() -> Result<()> {
                     Format::Human => output::ticket_human(&ticket),
                 }
             }
-            TicketCommand::List { limit } => {
-                let tickets = g.client()?.list_tickets(*limit).await?;
-                match g.format() {
-                    Format::Json => print_json(&tickets)?,
-                    Format::Human => output::tickets_table(&tickets),
-                }
+            TicketCommand::List { limit, status } => {
+                let statuses = validate_statuses(status)?;
+                let list = g.client()?.list_tickets(*limit as usize, &statuses).await?;
+                emit_ticket_list(g, "Tickets", &list, &statuses)?;
             }
-            TicketCommand::Search { query } => {
-                let tickets = g.client()?.search_tickets(&query.join(" ")).await?;
-                match g.format() {
-                    Format::Json => print_json(&tickets)?,
-                    Format::Human => output::tickets_table(&tickets),
-                }
+            TicketCommand::Search { query, status } => {
+                let statuses = validate_statuses(status)?;
+                let list = g
+                    .client()?
+                    .search_tickets(&query.join(" "), 100, &statuses)
+                    .await?;
+                emit_ticket_list(g, "Search", &list, &statuses)?;
             }
             TicketCommand::Comments { id } => {
                 let comments = g.client()?.list_comments(*id).await?;
@@ -253,16 +269,20 @@ async fn run() -> Result<()> {
                     Format::Human => output::views_table(&views),
                 }
             }
-            ViewCommand::Tickets { id, limit } => {
+            ViewCommand::Tickets {
+                id,
+                limit,
+                all,
+                status,
+            } => {
                 let view_id = resolve_view_id(g, *id)?;
-                let tickets = g.client()?.list_view_tickets(view_id, *limit).await?;
-                match g.format() {
-                    Format::Json => print_json(&tickets)?,
-                    Format::Human => {
-                        println!("View {view_id} — {} ticket(s)", tickets.len());
-                        output::tickets_table(&tickets);
-                    }
-                }
+                let statuses = validate_statuses(status)?;
+                let cap = if *all { None } else { Some(*limit as usize) };
+                let list = g
+                    .client()?
+                    .list_view_tickets(view_id, cap, &statuses)
+                    .await?;
+                emit_ticket_list(g, &format!("View {view_id}"), &list, &statuses)?;
             }
         },
 
@@ -325,6 +345,63 @@ fn resolve_body(args: &ReplyArgs) -> Result<String> {
         return Ok(buf);
     }
     anyhow::bail!("provide the reply body with --body, --file, or --stdin")
+}
+
+const VALID_STATUSES: [&str; 6] = ["new", "open", "pending", "hold", "solved", "closed"];
+
+/// Normalize and validate `--status` values against the known Zendesk statuses.
+fn validate_statuses(input: &[String]) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for s in input {
+        let low = s.trim().to_lowercase();
+        if low.is_empty() {
+            continue;
+        }
+        if !VALID_STATUSES.contains(&low.as_str()) {
+            anyhow::bail!(
+                "invalid status '{s}'. Valid statuses: {}",
+                VALID_STATUSES.join(", ")
+            );
+        }
+        out.push(low);
+    }
+    Ok(out)
+}
+
+/// Render a [`client::TicketList`] as JSON (object with count metadata) or a
+/// human table with a summary line.
+fn emit_ticket_list(
+    g: &GlobalArgs,
+    context: &str,
+    list: &client::TicketList,
+    statuses: &[String],
+) -> Result<()> {
+    match g.format() {
+        Format::Json => print_json(&serde_json::json!({
+            "context": context,
+            "total": list.total,
+            "shown": list.tickets.len(),
+            "status_filter": statuses,
+            "tickets": list.tickets,
+        }))?,
+        Format::Human => {
+            let filter = if statuses.is_empty() {
+                String::new()
+            } else {
+                format!("  (status: {})", statuses.join(","))
+            };
+            match list.total {
+                Some(t) => println!(
+                    "{context} — showing {} of {} total{filter}",
+                    list.tickets.len(),
+                    t
+                ),
+                None => println!("{context} — {} ticket(s){filter}", list.tickets.len()),
+            }
+            output::tickets_table(&list.tickets);
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the view ID from an explicit argument, falling back to the
@@ -469,6 +546,15 @@ COMMON COMMANDS
   zd view list                      List views (agent filters) with IDs.
   zd view tickets 1500014631401     Tickets in a view (agent filter).
   zd view tickets                   Tickets in the configured default view.
+  zd view tickets --status open     Filter by status; --all fetches every page.
+
+IDs OR URLS
+  Anywhere a ticket/view ID is expected you may paste the interface URL instead,
+  e.g. `zd ticket show https://acme.zendesk.com/agent/tickets/12345` or
+  `zd view tickets https://acme.zendesk.com/agent/filters/67890`.
+
+STATUS FILTER
+  --status accepts a comma-separated list: new,open,pending,hold,solved,closed.
   zd reply 12345 --internal --body "Looking into this."
   zd reply 12345 --public   --body "Thanks — fixed now!"
   echo "long text" | zd reply 12345 --public --stdin

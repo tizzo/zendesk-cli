@@ -41,12 +41,23 @@ pub struct TicketResponse {
 #[derive(Debug, Deserialize)]
 pub struct TicketsResponse {
     pub tickets: Vec<Ticket>,
-    // Kept to document the response shape / enable future pagination.
+    /// Full URL of the next page (offset pagination), or `None` on the last page.
+    #[serde(default)]
+    pub next_page: Option<String>,
+    /// Total number of tickets matching (across all pages).
+    #[serde(default)]
+    pub count: Option<i64>,
+}
+
+/// Wrapper for `GET /search.json` — the Search API returns `results`, not `tickets`.
+#[derive(Debug, Deserialize)]
+pub struct SearchResponse {
+    #[serde(default)]
+    pub results: Vec<Ticket>,
     #[serde(default)]
     #[allow(dead_code)]
     pub next_page: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub count: Option<i64>,
 }
 

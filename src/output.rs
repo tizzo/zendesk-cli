@@ -40,6 +40,12 @@ pub fn ticket_human(t: &Ticket) {
     if let Some(u) = &t.updated_at {
         println!("  Updated : {u}");
     }
+    if let Some(desc) = t.description.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        println!("\n  Description:");
+        for line in desc.lines() {
+            println!("    {line}");
+        }
+    }
 }
 
 pub fn tickets_table(tickets: &[Ticket]) {

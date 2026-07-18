@@ -63,6 +63,12 @@ zd view list                                # list views with their IDs
 zd view tickets 1500014631401               # tickets in a specific view
 zd config set --default-view 1500014631401  # remember your usual queue
 zd view tickets                             # ...then just run this
+zd view tickets --status open,pending       # filter by status
+zd view tickets --all                        # fetch every page (past 100)
+
+# IDs or URLs are interchangeable — paste an interface URL anywhere an ID goes:
+zd ticket show https://acme.zendesk.com/agent/tickets/12345
+zd view tickets https://acme.zendesk.com/agent/filters/67890
 
 # Write replies — visibility is REQUIRED and explicit:
 zd reply 12345 --internal --body "Investigating, will update shortly."
