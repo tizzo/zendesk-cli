@@ -1,0 +1,30 @@
+[package]
+name = "zendesk-cli"
+version = "0.1.0"
+edition = "2021"
+description = "A fast, self-documenting CLI for reading and writing Zendesk ticket replies (public and internal)."
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "zd"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+directories = "5"
+toml = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
